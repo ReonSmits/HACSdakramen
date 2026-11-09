@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Final, cast
 
-from CasambiBt import Unit, UnitControlType
+from CasambiBt import Unit, UnitControl, UnitControlType
 
 from homeassistant.components.cover import (
     ATTR_POSITION,
@@ -22,6 +22,28 @@ from .const import DOMAIN
 from .entities import CasambiUnitEntity, TypedEntityDescription
 
 _LOGGER = logging.getLogger(__name__)
+
+# ── Library workaround (Illumy DNS dakramen) ──────────────────────────────────
+# casambi-bt-skk parses SLIDER controls as `cInt << (8 - length)`. The Illumy
+# DNS has SLIDER controls wider than 8 bits, so that shift is negative and
+# setStateFromBytes() raises "ValueError: negative shift count". That happens
+# before the unit is marked online, so the light and the covers stay
+# unavailable. We catch the error: raw_state and every control before the
+# sliders are already parsed, and the cover entities below read the slider
+# bits straight from raw_state.
+_orig_set_state_from_bytes = Unit.setStateFromBytes
+
+
+def _safe_set_state_from_bytes(self: Unit, value: bytes) -> None:
+    try:
+        _orig_set_state_from_bytes(self, value)
+    except ValueError as err:
+        _LOGGER.debug("Ignored state parse error for unit %s: %s", self.name, err)
+
+
+if not getattr(Unit.setStateFromBytes, "_casambi_illumy_patched", False):
+    _safe_set_state_from_bytes._casambi_illumy_patched = True  # type: ignore[attr-defined]
+    Unit.setStateFromBytes = _safe_set_state_from_bytes  # type: ignore[method-assign]
 
 # Controls that indicate a light fixture rather than a motor-driven blind.
 # An EXT/1ch/Dim unit with any of these is a luminaire (e.g. Occhio Mito), not a cover.
@@ -52,6 +74,38 @@ def _is_cover_unit(unit: Unit) -> bool:
     )
 
 
+_SLIDER_NAMES: Final = ("Plissé", "Zonwering")
+
+
+def _slider_controls(unit: Unit) -> list[UnitControl]:
+    """Return the SLIDER controls of an Illumy-style unit, ordered by offset.
+
+    Only for EXT units that also have a light (DIMMER) and at least one
+    SLIDER, i.e. the Illumy DNS skylight (light + plissé + zonwering).
+    The Winsol Lamel is excluded: it has its own entities in lamel_controls.
+    """
+    ctypes = {c.type for c in unit.unitType.controls}
+    if (
+        not unit.unitType.mode.startswith("EXT/")
+        or UnitControlType.SLIDER not in ctypes
+        or UnitControlType.ONOFF in ctypes
+    ):
+        return []
+    return sorted(
+        (c for c in unit.unitType.controls if c.type == UnitControlType.SLIDER),
+        key=lambda c: c.offset,
+    )
+
+
+def _read_bits(raw: bytes, offset: int, length: int) -> int:
+    """Read `length` bits at bit `offset` from raw state bytes (little-endian)."""
+    byte_offset = offset // 8
+    bit_offset = offset % 8
+    num_bytes = (length + bit_offset + 7) // 8
+    val = int.from_bytes(raw[byte_offset : byte_offset + num_bytes], "little")
+    return (val >> bit_offset) & ((1 << length) - 1)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -69,6 +123,15 @@ async def async_setup_entry(
         for unit in casa_api.get_units()
         if _is_cover_unit(unit)
     ]
+
+    # Illumy DNS dakramen: every SLIDER control is a separate cover
+    # (index 0 = Plissé, index 1 = Zonwering).
+    for unit in casa_api.get_units():
+        if _is_cover_unit(unit):
+            continue
+        for index, ctrl in enumerate(_slider_controls(unit)):
+            name = _SLIDER_NAMES[index] if index < len(_SLIDER_NAMES) else f"Slider {index + 1}"
+            cover_entities.append(CasambiSliderCover(casa_api, unit, ctrl, index, name))
 
     _LOGGER.info("Creating %d cover entities", len(cover_entities))
     async_add_entities(cover_entities)
@@ -125,3 +188,67 @@ class CasambiCover(CasambiUnitEntity, CoverEntity):
         position = kwargs[ATTR_POSITION]
         # Invert: HA 100%=open → Winsol dimmer=0; HA 0%=closed → Winsol dimmer=255
         await self._api.casa.setLevel(unit, (100 - position) * 255 // 100)
+
+
+class CasambiSliderCover(CasambiUnitEntity, CoverEntity):
+    """Cover for one SLIDER control of an Illumy DNS skylight.
+
+    Position is the slider value scaled linearly to 0-100, without inversion:
+    HA position 100 = slider at its maximum. (Hal and both plissés: 100 is
+    physically closed; keuken zonwering: 0 is physically closed.)
+    """
+
+    def __init__(
+        self,
+        api: CasambiApi,
+        unit: Unit,
+        ctrl: UnitControl,
+        index: int,
+        name: str,
+    ) -> None:
+        """Initialise a cover for the given SLIDER control."""
+        desc = TypedEntityDescription(
+            key=unit.uuid, name=name, entity_type=f"slider-cover-{index}"
+        )
+        super().__init__(api, desc, unit)
+        self._ctrl = ctrl
+        self._max = (1 << ctrl.length) - 1
+        self._attr_device_class = CoverDeviceClass.BLIND
+        self._attr_supported_features = (
+            CoverEntityFeature.OPEN
+            | CoverEntityFeature.CLOSE
+            | CoverEntityFeature.SET_POSITION
+        )
+
+    @property
+    def current_cover_position(self) -> int | None:
+        """Return the slider value as 0-100."""
+        unit = cast("Unit", self._obj)
+        if unit.state is None or unit.state.raw_state is None:
+            return None
+        raw = _read_bits(unit.state.raw_state, self._ctrl.offset, self._ctrl.length)
+        return round(raw * 100 / self._max)
+
+    @property
+    def is_closed(self) -> bool | None:
+        """Return True at position 0 (HA convention)."""
+        pos = self.current_cover_position
+        return None if pos is None else pos == 0
+
+    async def _set_position(self, position: int) -> None:
+        unit = cast("Unit", self._obj)
+        raw = max(0, min(self._max, round(position * self._max / 100)))
+        await self._api.casa.setControlValue(unit, self._ctrl, raw)
+        self.async_write_ha_state()
+
+    async def async_open_cover(self, **kwargs) -> None:
+        """Move to position 100."""
+        await self._set_position(100)
+
+    async def async_close_cover(self, **kwargs) -> None:
+        """Move to position 0."""
+        await self._set_position(0)
+
+    async def async_set_cover_position(self, **kwargs) -> None:
+        """Move to the requested position."""
+        await self._set_position(int(kwargs[ATTR_POSITION]))

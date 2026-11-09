@@ -800,3 +800,9 @@ class CasambiApi:
             self._reconnect_task = self.conf_entry.async_create_background_task(
                 self.hass, self.reconnect(), "Reconnect"
             )
+
+
+# Illumy DNS dakramen: import the cover module as soon as the integration loads,
+# so its library workaround (see cover.py) is active before the first Bluetooth
+# state packet arrives. Must stay at the bottom to avoid a circular import.
+from . import cover as _illumy_patch  # noqa: E402,F401

@@ -1,3 +1,5 @@
+> **Fork voor de Illumy DNS-dakramen.** Zie [INFO.md](INFO.md) voor alle aanpassingen, entiteiten en achtergrond.
+
 > **Fork notice**: This is a fork of [@rankjie/casambi-bt-hass](https://github.com/rankjie/casambi-bt-hass),
 > maintained by [@Superkikim](https://github.com/Superkikim).
 > It adds Winsol blind/cover support, Sensor Platform V4 environment sensors,
