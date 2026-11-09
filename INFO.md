@@ -1,373 +1,206 @@
-# HACSdakramen: Casambi-integratie voor de Illumy DNS-dakramen
+# Casambi dakramen in Home Assistant
 
-Eigen fork van [Superkikim/casambi-bt-hass](https://github.com/Superkikim/casambi-bt-hass),
-gebaseerd op upstream-versie `1.9.0.dev30` (commit `b4ab686`, 26 oktober 2026), met de
-aanpassingen die nodig zijn om de twee Luxlight **Illumy DNS**-dakramen (keuken en hal)
-in Home Assistant te laten werken: lamp, plissé en zonwering.
+Eigen versie van de Casambi Bluetooth integratie voor Home Assistant, gemaakt voor de twee Illumy DNS dakramen van Luxlight in de keuken en de hal. Elk dakraam heeft verlichting, een plissé en een zonwering. Met deze versie zijn alle drie te bedienen vanuit Home Assistant en lopen de automations voor de zonwering weer.
 
-Inhoud:
+De basis is de integratie van [Superkikim/casambi-bt-hass](https://github.com/Superkikim/casambi-bt-hass), versie `1.9.0.dev30` (commit `b4ab686` van 26 oktober 2026). Daar zijn twee bestanden aan aangepast. Al het andere is gelijk aan het origineel.
 
-1. [Snel overzicht: wat is er aangepast](#1-snel-overzicht-wat-is-er-aangepast)
-2. [Installatie van A tot Z](#2-installatie-van-a-tot-z)
-3. [Controleren of alles werkt](#3-controleren-of-alles-werkt)
-4. [Alle aanpassingen in detail](#4-alle-aanpassingen-in-detail)
-5. [Hardware, netwerken en entiteiten](#5-hardware-netwerken-en-entiteiten)
-6. [Problemen oplossen](#6-problemen-oplossen)
-7. [Onderhoud: upstream bijwerken en HA-updates](#7-onderhoud-upstream-bijwerken-en-ha-updates)
-8. [Geschiedenis van de storing (november 2026)](#8-geschiedenis-van-de-storing-november-2026)
+## Wat er is gedaan
 
----
+Op 4 november 2026 werkten de dakramen ineens niet meer. Plissé, zonwering en verlichting stonden in Home Assistant op `unavailable`. Op 9 november is de oorzaak gevonden en opgelost.
 
-## 1. Snel overzicht: wat is er aangepast
+### De oorzaak
 
-Ten opzichte van upstream `b4ab686` zijn precies deze bestanden gewijzigd. Al het andere
-is ongewijzigd upstream.
+Er speelden twee dingen tegelijk.
 
-| # | Bestand | Wat | Waarom |
-|---|---|---|---|
-| A | `custom_components/casambi_bt/cover.py` | Workaround voor de crash `negative shift count` (bovenaan het bestand) | Zonder deze workaround blijven de Illumy-units offline, en staan lamp én schermen op `unavailable` |
-| B | `custom_components/casambi_bt/cover.py` | Nieuwe covers voor de SLIDER-controls: `_slider_controls()`, `_read_bits()`, `CasambiSliderCover`, en een extra lus in `async_setup_entry` | Upstream kent de plissé en zonwering van de Illumy niet |
-| C | `custom_components/casambi_bt/__init__.py` | Eén import-regel helemaal onderaan | Zorgt dat workaround A actief is vóórdat Bluetooth verbindt |
-| D | `custom_components/casambi_bt/manifest.json` | `name`, `codeowners`, `documentation`, `version` → `1.9.0.dev31` | Herkenbaar als eigen versie; `domain` en `requirements` zijn **niet** veranderd |
-| E | `hacs.json` | `name` → `Casambi Bluetooth (dakramen)` | Naam in HACS |
-| F | `INFO.md`, `README.md` | Deze documentatie en een verwijzing bovenaan de README | Terugvindbaarheid |
+* **De eigen aanpassingen waren weg.** Tussen 3 en 4 november is Home Assistant bijgewerkt van 2026.10.1 naar 2026.10.4. Tegelijk heeft HACS de integratie bijgewerkt naar de nieuwste versie van Superkikim. Daarmee zijn de lokale aanpassingen overschreven die de plissé en zonwering als cover in Home Assistant zetten. De vier covers bleven als lege entiteit achter.
+* **De library crashte op de dakramen.** De integratie gebruikt de Python library `casambi-bt-skk` om met Casambi te praten. Die library loopt vast op de schuifregelaars van de Illumy. Elke keer dat een dakraam zijn status stuurt, volgt de fout `ValueError: negative shift count`. Tussen 4 en 9 november stond die fout 328 keer in de log. Omdat de crash gebeurt voordat de library het dakraam als online markeert, bleef ook de verlichting onbereikbaar.
 
-Zoek in de code op **`Illumy`** om alle aanpassingen in de code terug te vinden.
-Het volledige verschil met upstream zie je met:
+### De oplossing
+
+* **Covers terug.** In `cover.py` is code toegevoegd die van elke schuifregelaar van de Illumy een cover maakt. De eerste wordt de plissé, de tweede de zonwering. De covers krijgen dezelfde unique ID als vroeger. Daardoor herkent Home Assistant ze als de oude entiteiten en blijven namen, ruimtes en automations gewoon werken.
+* **Crash afgevangen.** Bovenin `cover.py` staat een kleine aanpassing van de library. Die vangt de fout op, zodat het dakraam toch online komt. De stand van de schuifregelaars leest de integratie zelf, op een manier die wel werkt.
+* **Aanpassing vroeg laden.** Onderaan `__init__.py` staat een extra regel die `cover.py` direct laadt als de integratie start. Na de eerste herstart werkte de keuken wel en de hal niet. Het hal netwerk had binnen 0,2 seconde na het starten al verbinding, nog voordat de aanpassing actief was. Het eerste statusbericht crashte daardoor alsnog en de hal bleef offline tot een handmatige herlaadactie. Met deze regel is de aanpassing actief voordat er verbinding is.
+* **Eigen naam.** In `manifest.json` en `hacs.json` heet de integratie nu *Casambi Bluetooth (dakramen)*, met deze repository als documentatie. De interne naam `casambi_bt` is bewust gelijk gebleven. Anders ziet Home Assistant het als een nieuwe integratie en zijn alle koppelingen en entiteiten weg.
+
+### Getest
+
+* De nieuwe code is getest met de echte library `casambi-bt-skk==0.4.0b5.post2` en een nagebootst dakraam, met schuifregelaars van 8 en van 16 bits. Er was geen crash meer, het uitlezen van de stand klopte en bij het verzetten van één scherm bleven het andere scherm en de verlichting ongemoeid.
+* Op 9 november op de Larikslaan geplaatst. Na de herstart en een herlaadactie van de hal waren alle zes de entiteiten weer bereikbaar.
+* De extra regel in `__init__.py` en de installatie via HACS vanuit deze repository zijn nog niet op een echte installatie getest. Na de eerstvolgende herstart moeten beide dakramen direct bereikbaar zijn, zonder herlaadactie. Dan is dat ook bevestigd.
+
+## Hoe het in elkaar zit
+
+### Hoe Home Assistant met de dakramen praat
+
+Casambi werkt via Bluetooth. Home Assistant verbindt met één van de apparaten in een Casambi netwerk en kan via dat apparaat het hele netwerk bedienen. Elk dakraam is een eigen netwerk met één apparaat, dus er zijn twee koppelingen in Home Assistant: `Smits5511` voor de keuken en `Smits5511+` voor de hal.
+
+Bij het toevoegen van een netwerk haalt de integratie eenmalig de opbouw van het netwerk op uit de Casambi cloud, met het wachtwoord van het netwerk. Daarin staat per apparaat welke bedieningen het heeft. Daarna gaat alles lokaal via Bluetooth.
+
+Elk apparaat stuurt zijn status als een rijtje bytes. In die bytes zit elke bediening op een vaste plek, met een vaste lengte in bits. De Illumy DNS heeft zes bedieningen, in deze volgorde:
+
+```
+SENSOR       intern, niet gebruikt
+SENSOR       intern, niet gebruikt
+DIMMER       helderheid van de verlichting
+TEMPERATURE  kleurtemperatuur van de verlichting
+SLIDER       plissé      (schuifregelaar 0)
+SLIDER       zonwering   (schuifregelaar 1)
+```
+
+### Waarom de library crasht
+
+De library rekent elke schuifregelaar om naar een waarde van 8 bits. Dat doet hij door de ruwe waarde een aantal plaatsen naar links te schuiven, namelijk 8 min de lengte van de regelaar. Bij een regelaar van 8 bits of minder gaat dat goed. De schuifregelaars van de Illumy zijn langer dan 8 bits. Dan wordt dat getal negatief, en een negatieve schuif mag in Python niet:
+
+```python
+scale = UnitState.SLIDER_RESOLUTION - c.length   # 8 min een getal groter dan 8
+self._state.slider = cInt << scale              # ValueError: negative shift count
+```
+
+Dit staat in `CasambiBt/_unit.py`, in `Unit.setStateFromBytes`, rond regel 729. De fout zit ook in de oudere versies 0.4.0b2 van de library.
+
+Het vervelende is waar het misgaat. De library leest eerst de status, zet daarna het apparaat op online en laat daarna Home Assistant weten dat er iets veranderd is. De crash zit in de eerste stap. Daardoor gebeurt de rest nooit en blijft het hele dakraam offline, ook de verlichting.
+
+### Wat de aanpassing van de library doet
+
+De aanpassing vervangt `Unit.setStateFromBytes` door een versie die de originele aanroept en de `ValueError` opvangt. De bedieningen worden op volgorde gelezen en de schuifregelaars komen als laatste. Op het moment van de crash zijn de ruwe bytes, de helderheid en de kleurtemperatuur dus al opgeslagen. Alleen de schuifregelaars ontbreken, en die leest de cover zelf uit de ruwe bytes.
+
+Een vlag `_casambi_illumy_patched` zorgt dat de aanpassing maar één keer wordt toegepast, ook als de integratie wordt herladen.
+
+### Hoe de covers werken
+
+Voor elk apparaat dat begint met `EXT/`, schuifregelaars heeft en geen aan/uit bediening, maakt de integratie per schuifregelaar een cover. Dat laatste is nodig om de Winsol Lamel buiten te houden. Die heeft ook schuifregelaars, maar krijgt eigen entiteiten in `lamel_controls.py`.
+
+* **Uitlezen.** De cover pakt de ruwe bytes van het apparaat en haalt daar de bits van zijn eigen schuifregelaar uit. Waar die staan en hoe lang ze zijn, leest hij uit de opbouw van het apparaat. De code hoeft de exacte breedte van de schuifregelaars dus niet te kennen en werkt bij elke lengte.
+* **Omrekenen.** De ruwe waarde wordt omgerekend naar 0 tot 100. De maximale waarde van de regelaar is 100, de minimale waarde is 0. Er wordt niets omgedraaid.
+* **Verzetten.** De cover rekent de gewenste stand terug naar een ruwe waarde en stuurt die met `setControlValue` naar het dakraam. Die functie past alleen de bits van die ene schuifregelaar aan en laat de rest van de status staan. Een scherm verzetten verandert dus niets aan het andere scherm of aan de verlichting.
+* **Dicht of open.** Home Assistant noemt een cover dicht bij stand 0. Dat is een afspraak in Home Assistant en zegt niets over het scherm zelf, zie de richting hieronder.
+* **Unique ID.** Elke cover krijgt als unique ID `{netwerk ID}-unit-{apparaat UUID}-slider-cover-{0 of 1}`. Dat is gelijk aan de oude versie van vóór 4 november. Verander dit nooit, anders maakt Home Assistant nieuwe entiteiten aan en werken de automations niet meer.
+
+### Richting van de schermen
+
+De schermen melden hun stand niet allemaal op dezelfde manier.
+
+* Bij beide plissés en bij de zonwering van de hal is stand 100 fysiek dicht en stand 0 open.
+* Bij de zonwering van de keuken is het omgekeerd. Daar is stand 0 fysiek dicht en 100 open. Dat is een fabrieksfout in dat ene scherm.
+
+De integratie draait niets om. De automation *Zonwering dakramen* stuurt beide zonweringen daarom in losse stappen aan, met tegengestelde waarden en drie seconden ertussen, zodat ze niet tegelijk over Bluetooth gaan.
+
+### Bestanden
+
+```
+HACSdakramen/
+├── custom_components/casambi_bt/
+│   ├── __init__.py        opstart van de integratie, aangepast: één regel onderaan
+│   ├── cover.py           covers, aangepast: library fix en covers voor de Illumy
+│   ├── manifest.json      naam, eigenaar, link en versie aangepast
+│   ├── light.py           verlichting, ongewijzigd
+│   ├── lamel_controls.py  Winsol Lamel, ongewijzigd
+│   └── ...                overige bestanden, ongewijzigd
+├── hacs.json              naam in HACS aangepast
+├── INFO.md                dit bestand
+└── README.md              documentatie van Superkikim, met bovenaan een verwijzing hierheen
+```
+
+**cover.py** begint met de aanpassing van de library, direct onder `_LOGGER`. Daaronder staan `_SLIDER_NAMES` met de namen Plissé en Zonwering, `_slider_controls()` die bepaalt welke apparaten covers krijgen, en `_read_bits()` die bits uit de ruwe status haalt. In `async_setup_entry` staat een extra lus die de covers aanmaakt. Onderaan staat de class `CasambiSliderCover`. De Winsol code van Superkikim in hetzelfde bestand is niet veranderd.
+
+**__init__.py** heeft als laatste regel `from . import cover as _illumy_patch`. Die moet echt onderaan staan. `cover.py` haalt `CasambiApi` uit `__init__.py`, en hoger in het bestand bestaat die nog niet. Dan start de integratie niet.
+
+**manifest.json** heeft een nieuwe naam, eigenaar `@ReonSmits`, een link naar deze repository en versie `1.9.0.dev31`. De `domain` is nog `casambi_bt` en de library is nog `casambi-bt-skk==0.4.0b5.post2`. Houd die twee zo.
+
+Alle aanpassingen in de code zijn terug te vinden door te zoeken op `Illumy`. Het volledige verschil met de versie van Superkikim zie je met:
 
 ```bash
 git diff b4ab686 HEAD -- custom_components hacs.json
 ```
 
-> **Let op: dit is níet de oude versie van vóór 4 november.** De lokaal aangepaste versie
-> die tot 3 november op Home Assistant draaide (met de toen gemaakte aanpassingen aan onder
-> meer `__init__.py`) is bij de update van 4 november door HACS overschreven en bestaat niet
-> meer op de HA-installatie. Deze repo is een **nieuwe** uitwerking op basis van upstream
-> `b4ab686`, die hetzelfde resultaat geeft: dezelfde entiteiten met dezelfde unique IDs.
-> De oude bestanden zitten alleen nog in back-up `d872567e` (zie §6.6).
+## Installeren
 
----
+### Vooraf
 
-## 2. Installatie van A tot Z
+* Home Assistant OS met HACS. Getest op Home Assistant 2026.10.4 met HACS 2.0.5.
+* Een Bluetooth adapter of Bluetooth proxy binnen bereik van beide dakramen.
+* Deze repository moet publiek zijn, anders kan HACS hem niet ophalen.
+* Maak eerst een back-up via Instellingen, Systeem, Back-ups.
 
-### A. Vooraf
+### Overstappen vanaf de versie van Superkikim
 
-- Home Assistant OS met HACS (getest op HA **2026.10.4**, Python 3.14.9, HACS 2.0.5).
-- Een Bluetooth-adapter of Bluetooth-proxy binnen bereik van beide dakramen.
-- Het wachtwoord van beide Casambi-netwerken (`Smits5511` en `Smits5511+`). Dat heb je
-  alleen nodig bij een **nieuwe** installatie, niet bij het overstappen (B).
-- Deze GitHub-repo moet **publiek** zijn, anders kan HACS hem niet ophalen.
-- Maak voor de zekerheid eerst een back-up: *Instellingen → Systeem → Back-ups → Back-up maken*.
+Dit is de situatie op de Larikslaan. De koppelingen, apparaten en entiteiten blijven staan. Alleen de code wordt vervangen.
 
-### B. Overstappen vanaf de Superkikim-versie (de situatie op de Larikslaan)
+1. Open HACS en zoek *Casambi Bluetooth (Superkikim fork)*. Kies via het menu met de drie puntjes voor verwijderen. Verwijder de integratie niet onder Instellingen, Apparaten en diensten. Dan ben je de koppelingen en apparaten kwijt.
+2. Kies in HACS rechtsboven het menu met de drie puntjes en dan *Custom repositories*. Vul `https://github.com/ReonSmits/HACSdakramen` in, kies type *Integration* en klik op toevoegen.
+3. Zoek in HACS *Casambi Bluetooth (dakramen)* en klik op downloaden.
+4. Herstart Home Assistant via Instellingen, Systeem, het aan/uit menu.
+5. Controleer of alles werkt, zie hieronder.
 
-De bestaande koppelingen (config entries), apparaten en entiteiten blijven gewoon
-staan. Je vervangt alleen de code.
+### Nieuwe installatie
 
-1. **HACS openen**: *HACS* in de zijbalk.
-2. **Oude repo uit HACS halen** (alleen de code, niet de koppeling):
-   zoek *Casambi Bluetooth (Superkikim fork)* → ⋮ → **Verwijderen** / *Remove*.
-   - Ga **niet** naar *Instellingen → Apparaten & diensten* om daar *Casambi* te verwijderen.
-     Dan ben je de koppeling, de apparaten en de koppelingen in automations kwijt.
-3. **Eigen repo toevoegen**: HACS → ⋮ (rechtsboven) → *Custom repositories*
-   - Repository: `https://github.com/ReonSmits/HACSdakramen`
-   - Type / Category: **Integration**
-   - *Add*.
-4. **Downloaden**: zoek in HACS *Casambi Bluetooth (dakramen)* → *Download* → kies de
-   nieuwste versie (`main`) → *Download*.
-5. **Home Assistant herstarten**: *Instellingen → Systeem → ⏻ → Home Assistant herstarten*.
-6. **Controleren**: doe de checks uit [§3](#3-controleren-of-alles-werkt).
+1. Doe stap 2 tot en met 4 hierboven.
+2. Ga naar Instellingen, Apparaten en diensten. Meestal staan de dakramen er al als ontdekt apparaat. Anders voeg je de integratie *Casambi Bluetooth (dakramen)* zelf toe.
+3. Voeg beide netwerken toe, elk met het eigen wachtwoord. `Smits5511` is de keuken op adres `91:2F:EB:01:36:E1`. `Smits5511+` is de hal op adres `79:03:A8:4B:A9:79`. Hiervoor is eenmalig internet nodig.
+4. Zet het apparaat van de keuken in de ruimte Keuken en dat van de hal in de ruimte Hal.
+5. Hernoem de entiteiten naar de namen in de tabel hieronder. Home Assistant maakt zelf namen als `cover.illumy_dns_plisse_2`. Die kennen de automations niet.
+6. Zet de automations terug uit een back-up. Die staan niet in deze repository.
+7. Controleer of alles werkt.
 
-### C. Nieuwe installatie (bijvoorbeeld na een herinstallatie van HA)
+### Zonder HACS
 
-1. Doe stap **B.3 t/m B.5** (repo toevoegen, downloaden, herstarten).
-2. *Instellingen → Apparaten & diensten*. Meestal verschijnen de dakramen vanzelf als
-   **Ontdekt** (via Bluetooth). Anders: *+ Integratie toevoegen* → *Casambi Bluetooth (dakramen)*.
-3. Voeg **beide** netwerken toe, elk met het eigen wachtwoord:
-   - `Smits5511` (keuken), adres `91:2F:EB:01:36:E1`
-   - `Smits5511+` (hal), adres `79:03:A8:4B:A9:79`
-4. Wijs de apparaten toe aan de ruimtes **Keuken** en **Hal**.
-5. Controleer de entity_ids (zie [§5](#5-hardware-netwerken-en-entiteiten)). Wijken ze af,
-   hernoem ze dan naar de namen uit de tabel, anders werken de automations niet.
-6. Doe de checks uit [§3](#3-controleren-of-alles-werkt).
+Download deze repository als zip via de knop Code op GitHub. Vervang in Studio Code Server de map `/config/custom_components/casambi_bt/` door de map `custom_components/casambi_bt/` uit de zip. Herstart daarna Home Assistant.
 
-### D. Handmatig installeren (zonder HACS, noodgeval)
+### Controleren of alles werkt
 
-1. Download deze repo als zip: GitHub → *Code* → *Download ZIP*.
-2. Open in HA **Studio Code Server** (of *Terminal & SSH*).
-3. Vervang de hele map `/config/custom_components/casambi_bt/` door de map
-   `custom_components/casambi_bt/` uit de zip.
-4. Herstart Home Assistant en doe de checks uit §3.
+Binnen een minuut na de herstart moeten deze zes entiteiten een stand hebben en niet op `unavailable` staan.
 
-### E. Na de installatie
-
-- **Nooit meer** de Superkikim-repo in HACS installeren of updaten: die overschrijft deze
-  aanpassingen (precies wat er op 4 november gebeurde).
-- Updates van deze repo komen via HACS binnen als er iets naar `main` is gepusht.
-
----
-
-## 3. Controleren of alles werkt
-
-Binnen ongeveer een minuut na de herstart moeten **alle zes** de entiteiten een waarde
-hebben (niet `unavailable`):
-
-| Entiteit | Verwacht |
+| Entiteit | Wat |
 |---|---|
-| `light.illumy_dns` | `on` / `off` |
-| `cover.keuken_illumy_dns_plisse` | `open` / `closed` + positie |
-| `cover.keuken_illumy_dns_zonwering` | `open` / `closed` + positie |
-| `light.illumy_dns_2` | `on` / `off` |
-| `cover.illumy_dns_plisse` | `open` / `closed` + positie |
-| `cover.illumy_dns_zonwering` | `open` / `closed` + positie |
+| `light.illumy_dns` | verlichting keuken |
+| `cover.keuken_illumy_dns_plisse` | plissé keuken |
+| `cover.keuken_illumy_dns_zonwering` | zonwering keuken |
+| `light.illumy_dns_2` | verlichting hal |
+| `cover.illumy_dns_plisse` | plissé hal |
+| `cover.illumy_dns_zonwering` | zonwering hal |
 
-In de log (*Instellingen → Systeem → Logboeken*, zoek op `casambi`):
+Zoek daarna in de log op `casambi`. Per dakraam hoort er een regel te staan die begint met `[CASAMBI_UNIT_PROFILE] id=1 name='Illumy DNS'`. De fout `negative shift count` mag niet meer voorkomen.
 
-- **Goed**: `[CASAMBI_UNIT_PROFILE] id=1 name='Illumy DNS' … controls=['SENSOR', 'SENSOR', 'DIMMER', 'TEMPERATURE', 'SLIDER', 'SLIDER']`, één per netwerk.
-- **Fout**: `ValueError: negative shift count`. Die mag **niet** meer verschijnen. Zie je
-  hem wel, dan ontbreekt aanpassing A of C (zie §6.1).
+Zet tot slot de zonwering van de hal op 100. Die moet fysiek dicht gaan.
 
-Test daarna één raam met de hand: zet de zonwering van de hal op 100. Die moet fysiek
-**dicht** gaan (zie de richting in §5).
-
----
-
-## 4. Alle aanpassingen in detail
-
-### A. Workaround voor de library-crash (`cover.py`, bovenaan)
-
-**Probleem.** De library `casambi-bt-skk==0.4.0b5.post2` (en ook de oudere 0.4.0b2.x)
-doet in `CasambiBt/_unit.py`, `Unit.setStateFromBytes()`, rond regel 729:
-
-```python
-scale = UnitState.SLIDER_RESOLUTION - c.length   # 8 - (breedte > 8) = negatief
-self._state.slider = cInt << scale              # ValueError: negative shift count
-```
-
-De SLIDER-controls van de Illumy DNS zijn breder dan 8 bits, dus elk statuspakket crasht.
-Dat gebeurt in `Casambi._dataCallback()` **vóór** `u._online = …` en vóór de
-change-callbacks. Daardoor blijft de unit voor altijd offline en staan **alle**
-entiteiten van het raam op `unavailable`, ook de lamp.
-
-**Oplossing.** `Unit.setStateFromBytes` wordt vervangen door een wrapper die deze
-`ValueError` opvangt. Op dat moment zijn `raw_state` en alle controls vóór de sliders
-(dimmer, kleurtemperatuur) al ingelezen; de sliders zelf leest aanpassing B direct uit
-`raw_state`.
-
-```python
-_orig_set_state_from_bytes = Unit.setStateFromBytes
-
-def _safe_set_state_from_bytes(self: Unit, value: bytes) -> None:
-    try:
-        _orig_set_state_from_bytes(self, value)
-    except ValueError as err:
-        _LOGGER.debug("Ignored state parse error for unit %s: %s", self.name, err)
-
-if not getattr(Unit.setStateFromBytes, "_casambi_illumy_patched", False):
-    _safe_set_state_from_bytes._casambi_illumy_patched = True
-    Unit.setStateFromBytes = _safe_set_state_from_bytes
-```
-
-De vlag `_casambi_illumy_patched` voorkomt dubbel patchen bij een reload.
-
-**Wanneer kan dit weg?** Pas als de library SLIDER-controls van meer dan 8 bits zelf
-goed afhandelt. Controleer dat door de workaround tijdelijk uit te zetten en in de log
-te kijken of `negative shift count` terugkomt.
-
-### B. Covers voor plissé en zonwering (`cover.py`)
-
-**Probleem.** Upstream maakt alleen covers voor units met mode `EXT/1ch/Dim` (Winsol).
-De Illumy heeft mode `EXT/2ch/Dim,TW[NoMix]` met twee SLIDER-controls; upstream maakt
-daar niets van.
-
-**Oplossing.** Nieuw in `cover.py`:
-
-- `_SLIDER_NAMES = ("Plissé", "Zonwering")`: index 0 = Plissé, index 1 = Zonwering.
-- `_slider_controls(unit)`: geeft de SLIDER-controls (gesorteerd op bit-offset) van units
-  waarvan de mode met `EXT/` begint, die een SLIDER hebben en **geen** ONOFF. Zo vallen
-  de Winsol Lamel (die heeft ONOFF en eigen entiteiten in `lamel_controls.py`) en
-  gewone Winsol-covers erbuiten.
-- `_read_bits(raw, offset, length)`: leest een bitveld uit `raw_state`, voor elke breedte.
-- `CasambiSliderCover`:
-  - `unique_id` = `{network_id}-unit-{unit_uuid}-slider-cover-{index}`, exact gelijk aan
-    de oude versie, zodat de bestaande entiteiten, ruimtes en automations blijven werken
-  - `entity_type = f"slider-cover-{index}"`, `device_class = blind`
-  - functies: openen, sluiten, positie zetten
-  - **positie** = `round(raw * 100 / max)`, met `max = 2**length - 1`: lineair, **niet omgekeerd**
-  - `is_closed` = positie 0 (HA-conventie)
-  - schrijven via `casa.setControlValue(unit, ctrl, raw)`: dat wijzigt alleen de bits van
-    die ene slider, dus de lamp en het andere scherm blijven ongemoeid
-- In `async_setup_entry` een extra lus die voor elke niet-Winsol-unit een
-  `CasambiSliderCover` per SLIDER toevoegt.
-
-### C. Workaround vroeg laden (`__init__.py`, allerlaatste regels)
-
-```python
-# Illumy DNS dakramen: import the cover module as soon as the integration loads,
-# so its library workaround (see cover.py) is active before the first Bluetooth
-# state packet arrives. Must stay at the bottom to avoid a circular import.
-from . import cover as _illumy_patch  # noqa: E402,F401
-```
-
-**Waarom.** Zonder deze regel wordt `cover.py`, en daarmee workaround A, pas geladen als HA
-het cover-platform opzet. Dat gebeurt ná het verbinden. Op 9 november verbond het
-hal-netwerk 0,2 seconde vóór dat moment; het eerste statuspakket crashte alsnog en de hal
-bleef `unavailable` tot een handmatige reload.
-
-**Waarom onderaan.** `cover.py` importeert `CasambiApi` uit `__init__.py`. Staat de regel
-hoger, dan bestaat `CasambiApi` nog niet en krijg je een circular-import-fout.
-
-### D. `manifest.json`
-
-```diff
--  "name": "Casambi Bluetooth (Superkikim fork)",
-+  "name": "Casambi Bluetooth (dakramen)",
--  "codeowners": ["@Superkikim"],
-+  "codeowners": ["@ReonSmits"],
--  "documentation": "https://github.com/Superkikim/casambi-bt-hass",
-+  "documentation": "https://github.com/ReonSmits/HACSdakramen",
--  "version": "1.9.0.dev30"
-+  "version": "1.9.0.dev31"
-```
-
-**Niet veranderd, en dat moet zo blijven:**
-- `"domain": "casambi_bt"`: anders ziet HA het als een andere integratie en zijn alle
-  koppelingen en entiteiten weg.
-- `"requirements": ["casambi-bt-skk==0.4.0b5.post2"]`: de library waarop de workaround
-  getest is.
-
-### E. `hacs.json`
-
-Alleen `"name"` → `"Casambi Bluetooth (dakramen)"`.
-
-### Getest
-
-De slider-logica is getest met de echte `casambi-bt-skk==0.4.0b5.post2` en een
-nagebootste Illumy-unit, met sliders van zowel 8 als 16 bits:
-
-- geen crash meer
-- lezen geeft 25 % en 100 %
-- 60 % zetten geeft de juiste ruwe waarde
-- de andere slider en de lamp blijven ongewijzigd
-
-Op 9 november daarna live bevestigd: alle zes de entiteiten weer beschikbaar.
-
----
-
-## 5. Hardware, netwerken en entiteiten
-
-### Netwerken
+## Gegevens van de installatie
 
 | | Keuken | Hal |
 |---|---|---|
-| Casambi-netwerk | `Smits5511` | `Smits5511+` |
+| Casambi netwerk | `Smits5511` | `Smits5511+` |
+| Bluetooth adres | `91:2F:EB:01:36:E1` | `79:03:A8:4B:A9:79` |
 | Config entry | `01M0NHRC8DX66JGR82C62HVHXQ` | `01M0NNCMXVE6M8QP6C69G1PYHW` |
-| Bluetooth-adres | `91:2F:EB:01:36:E1` | `79:03:A8:4B:A9:79` |
-| Network ID | `BUPYNsWwwnIXV8uQeITsDdl6Quh4m6q3` | `Y00W32ihv2s5dtrvVVnnfqhzrztFdT0L` |
-| Unit UUID | `1EBC7B8A-79BA-449C-B652-15D22D16597F` | `857AEF8A-28AD-49E8-A7DC-BD57FED495E0` |
+| Netwerk ID | `BUPYNsWwwnIXV8uQeITsDdl6Quh4m6q3` | `Y00W32ihv2s5dtrvVVnnfqhzrztFdT0L` |
+| Apparaat UUID | `1EBC7B8A-79BA-449C-B652-15D22D16597F` | `857AEF8A-28AD-49E8-A7DC-BD57FED495E0` |
 
-### De unit (beide ramen gelijk)
+Beide apparaten zijn een Illumy DNS van Luxlight met firmware 12290 en mode `EXT/2ch/Dim,TW[NoMix]`. Powercalc meet het verbruik van de verlichting in `sensor.dakraam_keuken_led_power` en `sensor.dakraam_hal_led_power`, met de bijbehorende `_energy` sensoren.
 
-- naam `Illumy DNS`, fabrikant Luxlight, firmware 12290, device_id 1
-- mode `EXT/2ch/Dim,TW[NoMix]`
-- controls, op volgorde: `SENSOR, SENSOR, DIMMER, TEMPERATURE, SLIDER, SLIDER`
-  - DIMMER + TEMPERATURE = de LED-verlichting
-  - SLIDER 0 = plissé, SLIDER 1 = zonwering (beide breder dan 8 bits)
+Deze automations hangen van de dakramen af:
 
-### Entiteiten
+* *Zonwering dakramen* stuurt de zonwering op basis van de weersverwachting van Met.no en de windstoten van Buienradar. Gebruikt de helper `input_datetime.zonwering_laatst_gesloten`, zodat de zonwering hooguit één keer per dag sluit.
+* *Zonwering onbereikbaar waarschuwing*
+* *Dakraam herstelpoging*
+* *Dakraam hal volgt de verlichting* en *Dakraam woonkamer volgt de verlichting*
+* *Plisse hal bij donker* en *Plisse woonkamer bij donker*
+* *Kleuren herstellen na opstart*
 
-| Entiteit | Wat | Ruimte | Unique ID (einde) |
-|---|---|---|---|
-| `light.illumy_dns` | LED keuken | Keuken | `…-light` |
-| `cover.keuken_illumy_dns_plisse` | plissé keuken | Keuken | `…-slider-cover-0` |
-| `cover.keuken_illumy_dns_zonwering` | zonwering keuken | Keuken | `…-slider-cover-1` |
-| `light.illumy_dns_2` | LED hal | Hal | `…-light` |
-| `cover.illumy_dns_plisse` | plissé hal | Hal | `…-slider-cover-0` |
-| `cover.illumy_dns_zonwering` | zonwering hal | Hal | `…-slider-cover-1` |
-| `sensor.dakraam_keuken_led_power` / `_energy` | Powercalc keuken | | |
-| `sensor.dakraam_hal_led_power` / `_energy` | Powercalc hal | | |
+Alleen *Zonwering dakramen* is bij het herstel inhoudelijk bekeken. Van de andere is alleen bekend dat ze naar de dakramen verwijzen.
 
-### Richting van de schermen (let op!)
+## Problemen oplossen
 
-| Scherm | Positie 100 | Positie 0 |
-|---|---|---|
-| Plissé keuken | dicht | open |
-| Plissé hal | dicht | open |
-| Zonwering hal | dicht | open |
-| **Zonwering keuken** | **open** | **dicht** (omgekeerd, fabrieksfout in dat scherm) |
+* **Alles op `unavailable` en `negative shift count` in de log.** De aanpassing van de library is niet actief. Controleer of `cover.py` het woord `Illumy` bevat en of de laatste regel van `__init__.py` de import van `cover` is. Zo niet, dan heeft HACS een andere versie neergezet. Installeer opnieuw volgens de stappen hierboven.
+* **Eén dakraam onbereikbaar, het andere werkt.** Meestal Bluetooth. Herlaad dat ene netwerk via Instellingen, Apparaten en diensten, Casambi, het netwerk, het menu met de drie puntjes. Meldingen als `Failed to connect` of `was not found` in de log wijzen op bereik of een storing. De keuken heeft dit af en toe.
+* **Verlichting werkt, maar de covers ontbreken.** De covers in `cover.py` ontbreken. Installeer opnieuw.
+* **Een scherm gaat de verkeerde kant op.** Kijk eerst bij de richting van de schermen. De zonwering van de keuken is bewust omgekeerd. Klopt het dan nog niet, pas dan de berekening in `CasambiSliderCover` aan en daarna de automations.
+* **Na een update van Home Assistant werkt het niet meer.** Kijk eerst in HACS of de integratie is bijgewerkt of vervangen. Controleer daarna het eerste punt.
 
-De automations houden hier rekening mee met aparte stappen per scherm. Verander de
-schaal in `CasambiSliderCover` dus niet zonder ook de automations aan te passen.
+### De versie van vóór 4 november terughalen
 
-### Automations die hiervan afhangen
+De lokale versie die tot 3 november draaide staat niet in deze repository. Die is door HACS overschreven. Hij zit alleen nog in de back-up `d872567e` van 3 november, gemaakt op Home Assistant 2026.10.1. Die back-up is versleuteld met de back-upsleutel. Home Assistant kan niet één map uit een back-up terugzetten. Een volledige restore zet alles terug naar 3 november. Wil je alleen de oude bestanden, download de back-up dan, ontsleutel hem op een computer en haal de map `homeassistant/custom_components/casambi_bt/` eruit.
 
-- `automation.zonwering_dakramen`: weer-gestuurde zonwering (Met.no + Buienradar)
-- `automation.zonwering_onbereikbaar_waarschuwing`
-- `automation.dakraam_herstelpoging`
-- `automation.dakraam_hal_koppelen_aan_verlichting`
-- `automation.dakraam_woonkamer_koppelen_aan_verlichting`
-- `automation.plisse_hal_bij_donker`, `automation.plisse_woonkamer_bij_donker`
-- `automation.kleuren_herstellen_na_opstart`
-- helper `input_datetime.zonwering_laatst_gesloten`
+## Bijwerken
 
----
-
-## 6. Problemen oplossen
-
-### 6.1 Alles `unavailable` en `negative shift count` in de log
-
-Workaround A is niet actief.
-
-- Controleer dat `/config/custom_components/casambi_bt/cover.py` het woord `Illumy` bevat
-  (helemaal bovenaan, bij `_safe_set_state_from_bytes`).
-- Controleer dat de laatste regel van `__init__.py` `from . import cover as _illumy_patch`
-  is (aanpassing C).
-- Ontbreekt een van beide, dan heeft HACS waarschijnlijk een andere versie geïnstalleerd.
-  Installeer opnieuw volgens §2B.
-
-### 6.2 Eén raam `unavailable`, het andere werkt
-
-Meestal Bluetooth. Herlaad alleen dat netwerk: *Instellingen → Apparaten & diensten →
-Casambi → het netwerk → ⋮ → Herladen*. Helpt dat niet, dan:
-
-- staat het raam aan (stroom), en is de adapter/proxy binnen bereik?
-- in de log: `Failed to connect` / `device disconnected` / `was not found` = bereik of
-  storing. `automation.dakraam_herstelpoging` probeert dit automatisch.
-
-### 6.3 Lamp werkt, maar plissé/zonwering-entiteiten ontbreken
-
-Aanpassing B ontbreekt (cover.py zonder `CasambiSliderCover`). Herinstalleer volgens §2B.
-
-### 6.4 Scherm beweegt de verkeerde kant op
-
-Controleer eerst de tabel *Richting van de schermen* in §5; de keuken-zonwering is
-bewust omgekeerd. Klopt het daarna nog niet, pas dan de positieberekening in
-`CasambiSliderCover.current_cover_position` / `_set_position` aan (`100 - …`) én de
-automations.
-
-### 6.5 Na een update van HA werkt het niet meer
-
-Kijk eerst of HACS de integratie heeft bijgewerkt of vervangen (HACS → de integratie →
-versie / repository). Controleer daarna §6.1.
-
-### 6.6 De oude versie van vóór 4 november terughalen
-
-Die zit in de HA-back-up **`d872567e`** (3 november 2026, HA 2026.10.1). De back-up is
-versleuteld met de back-upsleutel. HA kan niet één map terugzetten; een volledige
-restore zet de hele configuratie terug naar 3 november. Alleen doen als laatste redmiddel,
-bij voorkeur door de back-up te downloaden en lokaal te ontsleutelen om er
-`homeassistant/custom_components/casambi_bt/` uit te halen.
-
-### 6.7 Terug naar de officiële Superkikim-versie
-
-HACS → *Casambi Bluetooth (dakramen)* verwijderen → Superkikim-repo downloaden → herstarten.
-Dan werken de dakramen **niet**, zolang upstream deze ondersteuning niet heeft.
-
----
-
-## 7. Onderhoud: upstream bijwerken en HA-updates
-
-### Upstream-verbeteringen overnemen
+### Verbeteringen van Superkikim overnemen
 
 ```bash
 git clone https://github.com/ReonSmits/HACSdakramen
@@ -377,31 +210,15 @@ git fetch upstream
 git merge upstream/main
 ```
 
-Controleer na de merge:
+Controleer na het samenvoegen of `cover.py` nog `_safe_set_state_from_bytes`, `_slider_controls` en `CasambiSliderCover` bevat, en of de laatste regel van `__init__.py` er nog staat. Controleer in `manifest.json` of de `domain` nog `casambi_bt` is en verhoog de versie, bijvoorbeeld naar `1.9.0.dev32`. Push naar `main`, werk bij in HACS en herstart Home Assistant.
 
-1. `cover.py` bevat nog `_safe_set_state_from_bytes`, `_slider_controls` en `CasambiSliderCover`.
-2. De laatste regel van `__init__.py` is nog `from . import cover as _illumy_patch`.
-3. `manifest.json`: `domain` is nog `casambi_bt`, `name` is nog *(dakramen)*. Hoog
-   `version` op (bijvoorbeeld `1.9.0.dev32`).
-4. Push naar `main`, update in HACS en herstart. Doe daarna de checks uit §3.
+### Wanneer de aanpassing van de library weg kan
 
-### Openstaande punten
+Pas als `casambi-bt-skk` schuifregelaars van meer dan 8 bits zelf goed verwerkt. Zet de aanpassing dan tijdelijk uit en kijk of `negative shift count` terugkomt in de log.
 
-- **`via_device` is deprecated** (warning in de log, `entities.py` en daardoor `light.py`
-  en `cover.py`). Stopt met werken in **HA 2027.8**. Vóór die HA-update ombouwen naar
-  `via_device_id`, of eerst kijken of upstream het al heeft opgelost en mergen.
-- `[CASAMBI_STARTUP] casambi-bt-skk=unknown` in de log: alleen de versiemelding faalt,
-  de library laadt gewoon. Onschuldig.
-- Af en toe Bluetooth-verbindingsfouten op `91:2F:EB:01:36:E1` (keuken). Die worden
-  opgevangen door `automation.dakraam_herstelpoging`.
+## Aandachtspunten
 
----
-
-## 8. Geschiedenis van de storing (november 2026)
-
-| Datum | Wat |
-|---|---|
-| t/m 3 nov | Alles werkt, op HA 2026.10.1 met een lokaal aangepaste versie van de integratie. Laatste back-up daarvan: `d872567e`. |
-| 3–4 nov | Update naar HA 2026.10.4 (Python 3.14.9). Tegelijk installeert HACS upstream-versie `b4ab686`, waarmee de lokale aanpassingen overschreven zijn. |
-| 4–9 nov | Alle vier de covers "stale restored" / `unavailable`, beide Illumy-lampen ook. 328× `ValueError: negative shift count` in de log. |
-| 9 nov | Oorzaak gevonden. Nieuwe `cover.py` (aanpassingen A + B) geplaatst en HA herstart: keuken werkt, hal pas na een reload. Daarom aanpassing C toegevoegd. Alles in deze repo gezet. |
+* Installeer of update nooit meer de versie van Superkikim in HACS. Die overschrijft deze aanpassingen, net als op 4 november.
+* De integratie gebruikt `via_device`, en dat geeft een waarschuwing in de log. Vanaf Home Assistant 2027.8 werkt dat niet meer. Vóór die update moet het in `entities.py` worden omgezet naar `via_device_id`, of overgenomen worden van Superkikim als die het heeft opgelost.
+* De melding `casambi-bt-skk=unknown` bij het opstarten is onschuldig. Alleen het uitlezen van het versienummer mislukt. De library zelf laadt gewoon.
+* De repository van Superkikim heeft geen licentiebestand. Houd deze repository daarom bij voorkeur voor eigen gebruik.
